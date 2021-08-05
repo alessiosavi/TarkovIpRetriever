@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -198,6 +199,7 @@ func CheckLatency() {
 	var badServers []string
 	var packetLoss []string
 	var goodServers []string
+
 	for _, f := range files {
 		array := fileutils.ReadFileInArray(f)
 		ipFiles = append(ipFiles, array...)
@@ -207,6 +209,22 @@ func CheckLatency() {
 	sort.Strings(ipFiles)
 
 	dbPath := os.Getenv("ip2location_path")
+	nRequest := os.Getenv("n_request")
+	intervalS := os.Getenv("interval")
+
+	if stringutils.IsBlank(nRequest) {
+		nRequest = "10"
+	}
+
+	if stringutils.IsBlank(intervalS) {
+		intervalS = "300"
+	}
+
+	interval, err := strconv.Atoi(intervalS)
+	if err != nil {
+		panic(err)
+	}
+
 	if stringutils.IsBlank(dbPath) {
 		panic("ip2location_path env var not set!")
 	}
@@ -229,8 +247,11 @@ func CheckLatency() {
 			panic(err)
 		}
 		var s Statistics
-		pinger.Count = 50
-		pinger.Interval = 200 * time.Millisecond
+		pinger.Count, err = strconv.Atoi(nRequest)
+		if err != nil {
+			panic(err)
+		}
+		pinger.Interval = time.Duration(interval) * time.Millisecond
 
 		pinger.Timeout = ((time.Millisecond * 140) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
 		err = pinger.Run()
