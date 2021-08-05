@@ -1,0 +1,6 @@
+.idea/
+*.exe
+*.zip
+TarkovIpRetriever*
+*.txt
+*_test.go
