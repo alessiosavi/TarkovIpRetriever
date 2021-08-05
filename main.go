@@ -10,6 +10,7 @@ import (
 	"github.com/schollz/progressbar/v3"
 	"io/ioutil"
 	"log"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -192,17 +193,34 @@ type Statistics struct {
 }
 
 func CheckLatency() {
-	array := fileutils.ReadFileInArray("concat_ip.txt")
-	db, err := ip2location.OpenDB("/home/alessiosavi/Downloads/IP2LOCATION-LITE-DB11.BIN/IP2LOCATION-LITE-DB11.BIN")
+	files := fileutils.FindFiles(".", "_ip.txt", false)
+	var ipFiles []string
+	var badServers []string
+	var packetLoss []string
+	var goodServers []string
+	for _, f := range files {
+		array := fileutils.ReadFileInArray(f)
+		ipFiles = append(ipFiles, array...)
+	}
+
+	ipFiles = UniqueString(ipFiles)
+	sort.Strings(ipFiles)
+
+	dbPath := os.Getenv("ip2location_path")
+	if stringutils.IsBlank(dbPath) {
+		panic("ip2location_path env var not set!")
+	}
+	if !fileutils.FileExists(dbPath) {
+		panic(dbPath + " path not found")
+	}
+	db, err := ip2location.OpenDB(dbPath)
 	if err != nil {
 		fmt.Print(err)
 		return
 	}
-	fmt.Println("START", len(array))
-	bar := progressbar.Default(int64(len(array)))
-	var servers []string
-	var packetLoss []string
-	for _, ip := range array {
+	bar := progressbar.Default(int64(len(ipFiles)))
+
+	for _, ip := range ipFiles {
 		bar.Describe(ip)
 		bar.Add(1)
 		ip = stringutils.Trim(ip)
@@ -211,8 +229,8 @@ func CheckLatency() {
 			panic(err)
 		}
 		var s Statistics
-		pinger.Count = 20
-		pinger.Interval = 300 * time.Millisecond
+		pinger.Count = 50
+		pinger.Interval = 200 * time.Millisecond
 
 		pinger.Timeout = ((time.Millisecond * 140) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
 		err = pinger.Run()
@@ -230,21 +248,26 @@ func CheckLatency() {
 		s.PacketsSent = stats.PacketsSent
 		s.PacketsRecvDuplicates = stats.PacketsRecvDuplicates
 
+		results, err := db.Get_all(s.Addr)
+		if err != nil {
+			fmt.Print(err)
+			return
+		}
 		if s.PacketLoss > 0 || s.MaxRtt > 100 {
-			results, err := db.Get_all(s.Addr)
-			if err != nil {
-				fmt.Print(err)
-				return
-			}
 			if s.PacketLoss > 0 {
 				packetLoss = append(packetLoss, results.Country_short+"-"+results.City)
 			}
-			servers = append(servers, results.Country_short+"-"+results.City)
+			badServers = append(badServers, results.Country_short+"-"+results.City)
+		} else {
+			goodServers = append(goodServers, results.Country_short+"-"+results.City)
 		}
 	}
-
-	log.Println("PACKET LOSS:", UniqueString(packetLoss))
-	log.Println("SERVERS :", UniqueString(servers))
-
 	bar.Close()
+	log.Println("PACKET LOSS:", UniqueString(packetLoss))
+	log.Println("BAD SERVERS :", UniqueString(badServers))
+	log.Println("GOOD SERVERS :", UniqueString(goodServers))
+	ioutil.WriteFile("good_servers.txt", []byte(stringutils.JoinSeparator("\n", goodServers...)), 0755)
+	ioutil.WriteFile("bad_servers.txt", []byte(stringutils.JoinSeparator("\n", badServers...)), 0755)
+	ioutil.WriteFile("packet_loss_servers.txt", []byte(stringutils.JoinSeparator("\n", packetLoss...)), 0755)
+
 }
