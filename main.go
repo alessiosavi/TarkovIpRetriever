@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	fileutils "github.com/alessiosavi/GoGPUtils/files"
+	"github.com/alessiosavi/GoGPUtils/helper"
 	stringutils "github.com/alessiosavi/GoGPUtils/string"
 	"github.com/go-ping/ping"
 	"github.com/ip2location/ip2location-go/v9"
@@ -191,14 +192,30 @@ type Statistics struct {
 
 	// AvgRtt is the average round-trip time sent via this pinger.
 	AvgRtt float64
+
+	Location string
+}
+
+func UniqueStats(stats []Statistics) []Statistics {
+	var unique map[string]Statistics = make(map[string]Statistics)
+	for _, s := range stats {
+		unique[s.Location] = s
+	}
+
+	var servers []Statistics
+
+	for _, v := range unique {
+		servers = append(servers, v)
+	}
+	return servers
 }
 
 func CheckLatency() {
 	files := fileutils.FindFiles(".", "_ip.txt", false)
 	var ipFiles []string
-	var badServers []string
-	var packetLoss []string
-	var goodServers []string
+	var badServers []Statistics
+	var packetLoss []Statistics
+	var goodServers []Statistics
 
 	for _, f := range files {
 		array := fileutils.ReadFileInArray(f)
@@ -246,6 +263,9 @@ func CheckLatency() {
 		if err != nil {
 			panic(err)
 		}
+
+		pinger.Size = 548
+		pinger.SetPrivileged(true)
 		var s Statistics
 		pinger.Count, err = strconv.Atoi(nRequest)
 		if err != nil {
@@ -274,21 +294,59 @@ func CheckLatency() {
 			fmt.Print(err)
 			return
 		}
+		s.Location = results.Country_short + "-" + results.City
 		if s.PacketLoss > 0 || s.MaxRtt > 100 {
 			if s.PacketLoss > 0 {
-				packetLoss = append(packetLoss, results.Country_short+"-"+results.City)
+				packetLoss = append(packetLoss, s)
 			}
-			badServers = append(badServers, results.Country_short+"-"+results.City)
+			badServers = append(badServers, s)
 		} else {
-			goodServers = append(goodServers, results.Country_short+"-"+results.City)
+			goodServers = append(goodServers, s)
 		}
 	}
 	bar.Close()
-	log.Println("PACKET LOSS:", UniqueString(packetLoss))
-	log.Println("BAD SERVERS :", UniqueString(badServers))
-	log.Println("GOOD SERVERS :", UniqueString(goodServers))
-	ioutil.WriteFile("good_servers.txt", []byte(stringutils.JoinSeparator("\n", goodServers...)), 0755)
-	ioutil.WriteFile("bad_servers.txt", []byte(stringutils.JoinSeparator("\n", badServers...)), 0755)
-	ioutil.WriteFile("packet_loss_servers.txt", []byte(stringutils.JoinSeparator("\n", packetLoss...)), 0755)
+	packetLoss = UniqueStats(packetLoss)
+	badServers = UniqueStats(badServers)
+	goodServers = UniqueStats(goodServers)
+
+	sort.Slice(packetLoss, func(i, j int) bool {
+		return packetLoss[i].MaxRtt < packetLoss[j].MaxRtt
+	})
+
+	sort.Slice(badServers, func(i, j int) bool {
+		return badServers[i].MaxRtt < badServers[j].MaxRtt
+	})
+	sort.Slice(goodServers, func(i, j int) bool {
+		return goodServers[i].MaxRtt < goodServers[j].MaxRtt
+	})
+
+	log.Println("PACKET LOSS:", helper.MarshalIndent(packetLoss))
+	log.Println("BAD SERVERS :", helper.MarshalIndent(badServers))
+	log.Println("GOOD SERVERS :", helper.MarshalIndent(goodServers))
+
+	var sPacket, sBad, sGood = []byte{}, []byte{}, []byte{}
+
+	for _, s := range packetLoss {
+		sPacket = append(sPacket, []byte(helper.MarshalIndent(s))...)
+	}
+
+	for _, s := range badServers {
+		sBad = append(sBad, []byte(helper.MarshalIndent(s))...)
+	}
+
+	for _, s := range goodServers {
+		sGood = append(sGood, []byte(helper.MarshalIndent(s))...)
+	}
+
+	if len(goodServers) > 0 {
+		ioutil.WriteFile("good_servers.txt", sPacket, 0755)
+	}
+	if len(badServers) > 0 {
+		ioutil.WriteFile("bad_servers.txt", sBad, 0755)
+	}
+
+	if len(packetLoss) > 0 {
+		ioutil.WriteFile("packet_loss_servers.txt", sPacket, 0755)
+	}
 
 }
