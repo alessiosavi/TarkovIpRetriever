@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	arrayutils "github.com/alessiosavi/GoGPUtils/array"
 	fileutils "github.com/alessiosavi/GoGPUtils/files"
 	"github.com/alessiosavi/GoGPUtils/helper"
 	stringutils "github.com/alessiosavi/GoGPUtils/string"
@@ -12,6 +13,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -66,13 +68,13 @@ func (ip *IP) Equals(target IP) bool {
 var MAIN_FOLDER = []string{"C:\\Battlestate Games\\EFT (live)\\Logs", "C:\\Battlestate Games\\EFT\\Logs", "/tmp/Logs"}
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Llongfile | log.Ltime)
+	log.SetFlags(log.LstdFlags | log.Lshortfile | log.Ltime)
 	var files []string
 	var err error
 
 	for _, f := range MAIN_FOLDER {
 		if fileutils.FileExists(f) {
-			if files, err = fileutils.ListFile(f); err != nil {
+			if files, err = fileutils.ListFiles(f); err != nil {
 				panic(err)
 			}
 			break
@@ -104,7 +106,7 @@ func main() {
 		}
 	}
 
-	ips = UniqueString(ips)
+	ips = arrayutils.UniqueString(ips)
 
 	if err = ioutil.WriteFile("all_ip.txt", ConcatIp(ips), 0755); err != nil {
 		panic(err)
@@ -152,20 +154,6 @@ func FilterUniqueIP(ips []string) []string {
 	return uniqueIp
 }
 
-func UniqueString(slice []string) []string {
-	var m map[string]struct{} = make(map[string]struct{})
-	for _, x := range slice {
-		m[x] = struct{}{}
-	}
-	slice = []string{}
-	for x := range m {
-		slice = append(slice, x)
-	}
-
-	sort.Strings(slice)
-	return slice
-}
-
 // Statistics represent the stats of a currently running or finished
 // pinger operation.
 type Statistics struct {
@@ -196,10 +184,17 @@ type Statistics struct {
 	Location string
 }
 
+// FIXME: Have to be taken the server with higer ping
 func UniqueStats(stats []Statistics) []Statistics {
 	var unique map[string]Statistics = make(map[string]Statistics)
 	for _, s := range stats {
-		unique[s.Location] = s
+		if _, ok := unique[s.Location]; !ok {
+			unique[s.Location] = s
+		} else {
+			if unique[s.Location].MaxRtt > s.MaxRtt || unique[s.Location].PacketLoss > s.PacketLoss {
+				unique[s.Location] = s
+			}
+		}
 	}
 
 	var servers []Statistics
@@ -222,19 +217,24 @@ func CheckLatency() {
 		ipFiles = append(ipFiles, array...)
 	}
 
-	ipFiles = UniqueString(ipFiles)
+	ipFiles = arrayutils.UniqueString(ipFiles)
 	sort.Strings(ipFiles)
 
 	dbPath := os.Getenv("ip2location_path")
 	nRequest := os.Getenv("n_request")
 	intervalS := os.Getenv("interval")
+	pingLimitS := os.Getenv("ping")
 
 	if stringutils.IsBlank(nRequest) {
-		nRequest = "10"
+		nRequest = "50"
 	}
 
 	if stringutils.IsBlank(intervalS) {
-		intervalS = "300"
+		intervalS = "150"
+	}
+
+	if stringutils.IsBlank(pingLimitS) {
+		pingLimitS = "100"
 	}
 
 	interval, err := strconv.Atoi(intervalS)
@@ -242,8 +242,18 @@ func CheckLatency() {
 		panic(err)
 	}
 
+	pingLimit, err := strconv.Atoi(pingLimitS)
+	if err != nil {
+		panic(err)
+	}
+
 	if stringutils.IsBlank(dbPath) {
-		panic("ip2location_path env var not set!")
+		if fileutils.FileExists("IP2LOCATION-LITE-DB11.BIN") {
+			dbPath = "IP2LOCATION-LITE-DB11.BIN"
+		} else {
+			panic("ip2location_path env var not set!")
+
+		}
 	}
 	if !fileutils.FileExists(dbPath) {
 		panic(dbPath + " path not found")
@@ -253,11 +263,12 @@ func CheckLatency() {
 		fmt.Print(err)
 		return
 	}
+
 	bar := progressbar.Default(int64(len(ipFiles)))
+	defer bar.Close()
 
 	for _, ip := range ipFiles {
 		bar.Describe(ip)
-		bar.Add(1)
 		ip = stringutils.Trim(ip)
 		pinger, err := ping.NewPinger(ip)
 		if err != nil {
@@ -272,10 +283,9 @@ func CheckLatency() {
 			panic(err)
 		}
 		pinger.Interval = time.Duration(interval) * time.Millisecond
+		pinger.Timeout = ((time.Millisecond * time.Duration(pingLimit)) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
 
-		pinger.Timeout = ((time.Millisecond * 140) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
-		err = pinger.Run()
-		if err != nil {
+		if err = pinger.Run(); err != nil {
 			panic(err)
 		}
 		stats := pinger.Statistics()
@@ -295,20 +305,22 @@ func CheckLatency() {
 			return
 		}
 		s.Location = results.Country_short + "-" + results.City
-		if s.PacketLoss > 0 || s.MaxRtt > 100 {
-			if s.PacketLoss > 0 {
-				packetLoss = append(packetLoss, s)
-			}
+		if s.PacketLoss > 0 {
+			packetLoss = append(packetLoss, s)
+		} else if s.MaxRtt > float64(pingLimit) {
 			badServers = append(badServers, s)
 		} else {
 			goodServers = append(goodServers, s)
 		}
+		bar.Add(1)
 	}
-	bar.Close()
+
 	packetLoss = UniqueStats(packetLoss)
 	badServers = UniqueStats(badServers)
 	goodServers = UniqueStats(goodServers)
 
+	goodServers = removeServersByLocation(goodServers, badServers...)
+	goodServers = removeServersByLocation(goodServers, packetLoss...)
 	sort.Slice(packetLoss, func(i, j int) bool {
 		return packetLoss[i].MaxRtt < packetLoss[j].MaxRtt
 	})
@@ -324,29 +336,58 @@ func CheckLatency() {
 	log.Println("BAD SERVERS :", helper.MarshalIndent(badServers))
 	log.Println("GOOD SERVERS :", helper.MarshalIndent(goodServers))
 
-	var sPacket, sBad, sGood = []byte{}, []byte{}, []byte{}
-
-	for _, s := range packetLoss {
-		sPacket = append(sPacket, []byte(helper.MarshalIndent(s))...)
+	if !fileutils.IsDir("result") {
+		if err = fileutils.CreateDir("result"); err != nil {
+			panic(err)
+		}
 	}
 
-	for _, s := range badServers {
-		sBad = append(sBad, []byte(helper.MarshalIndent(s))...)
-	}
+	var sPacket []byte
+	var sBad []byte
+	var sGood []byte
 
-	for _, s := range goodServers {
-		sGood = append(sGood, []byte(helper.MarshalIndent(s))...)
-	}
+	sPacket = append(sPacket, []byte(helper.MarshalIndent(packetLoss))...)
+	sBad = append(sBad, []byte(helper.MarshalIndent(badServers))...)
+	sGood = append(sGood, []byte(helper.MarshalIndent(goodServers))...)
 
+	now := time.Now().Format("02-01-06_3:04:05")
+	fname := path.Join("result", now)
+	fileutils.CreateDir(fname)
 	if len(goodServers) > 0 {
-		ioutil.WriteFile("good_servers.txt", sPacket, 0755)
+		ioutil.WriteFile(path.Join(fname, "good_servers.txt"), sGood, 0755)
 	}
 	if len(badServers) > 0 {
-		ioutil.WriteFile("bad_servers.txt", sBad, 0755)
+		ioutil.WriteFile(path.Join(fname, "bad_servers.txt"), sBad, 0755)
 	}
 
 	if len(packetLoss) > 0 {
-		ioutil.WriteFile("packet_loss_servers.txt", sPacket, 0755)
+		ioutil.WriteFile(path.Join(fname, "packet_loss_servers.txt"), sPacket, 0755)
 	}
 
+}
+
+func removeServersByLocation(goodServers []Statistics, wrongServers ...Statistics) []Statistics {
+
+	var goodServerMap map[string]Statistics = make(map[string]Statistics)
+	var wrongServerMap map[string]Statistics = make(map[string]Statistics)
+
+	for _, m := range goodServers {
+		goodServerMap[m.Location] = m
+	}
+
+	for _, m := range wrongServers {
+		wrongServerMap[m.Location] = m
+	}
+
+	for _, m := range wrongServers {
+		delete(goodServerMap, m.Location)
+	}
+
+	goodServers = nil
+
+	for _, m := range goodServerMap {
+		goodServers = append(goodServers, m)
+	}
+
+	return goodServers
 }
