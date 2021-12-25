@@ -138,7 +138,7 @@ func FilterUniqueIP(ips []string) []string {
 		ipData = append(ipData, NewIp(ip))
 	}
 
-	var significantIp map[string]struct{} = make(map[string]struct{})
+	var significantIp = make(map[string]struct{})
 	for _, ip := range ipData {
 		significantIp[ip.GetSignificant()] = struct{}{}
 	}
@@ -186,7 +186,7 @@ type Statistics struct {
 
 // FIXME: Have to be taken the server with higer ping
 func UniqueStats(stats []Statistics) []Statistics {
-	var unique map[string]Statistics = make(map[string]Statistics)
+	var unique = make(map[string]Statistics)
 	for _, s := range stats {
 		if _, ok := unique[s.Location]; !ok {
 			unique[s.Location] = s
@@ -368,8 +368,8 @@ func CheckLatency() {
 
 func removeServersByLocation(goodServers []Statistics, wrongServers ...Statistics) []Statistics {
 
-	var goodServerMap map[string]Statistics = make(map[string]Statistics)
-	var wrongServerMap map[string]Statistics = make(map[string]Statistics)
+	var goodServerMap = make(map[string]Statistics)
+	var wrongServerMap = make(map[string]Statistics)
 
 	for _, m := range goodServers {
 		goodServerMap[m.Location] = m
