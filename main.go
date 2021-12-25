@@ -291,11 +291,11 @@ func CheckLatency() {
 		stats := pinger.Statistics()
 
 		s.Addr = stats.Addr
-		s.AvgRtt = float64(stats.AvgRtt) / float64(time.Millisecond)
-		s.MaxRtt = float64(stats.MaxRtt) / float64(time.Millisecond)
-		s.MinRtt = float64(stats.MinRtt) / float64(time.Millisecond)
+		s.AvgRtt = float64(stats.AvgRtt / time.Millisecond)
+		s.MaxRtt = float64(stats.MaxRtt / time.Millisecond)
+		s.MinRtt = float64(stats.MinRtt / time.Millisecond)
 		s.PacketsRecv = stats.PacketsRecv
-		s.PacketLoss = stats.PacketLoss
+		s.PacketLoss = stats.PacketLoss * float64(stats.PacketsSent) / 100.0
 		s.PacketsSent = stats.PacketsSent
 		s.PacketsRecvDuplicates = stats.PacketsRecvDuplicates
 
