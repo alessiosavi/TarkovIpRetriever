@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -118,7 +119,6 @@ func main() {
 	if err = ioutil.WriteFile("filtered_ip.txt", data, 0755); err != nil {
 		panic(err)
 	}
-
 	CheckLatency()
 }
 
@@ -230,7 +230,7 @@ func CheckLatency() {
 	}
 
 	if stringutils.IsBlank(intervalS) {
-		intervalS = "150"
+		intervalS = "500"
 	}
 
 	if stringutils.IsBlank(pingLimitS) {
@@ -267,44 +267,61 @@ func CheckLatency() {
 	bar := progressbar.Default(int64(len(ipFiles)))
 	defer bar.Close()
 
-	for _, ip := range ipFiles {
-		bar.Describe(ip)
-		ip = stringutils.Trim(ip)
-		pinger, err := ping.NewPinger(ip)
-		if err != nil {
-			panic(err)
-		}
+	var res []Statistics = make([]Statistics, len(ipFiles))
+	var wg sync.WaitGroup
+	N := 3
+	semaphore := make(chan struct{}, N)
+	wg.Add(len(ipFiles))
+	for i, ip := range ipFiles {
+		go func(i int, ip string) {
+			semaphore <- struct{}{}
+			bar.Describe(ip)
+			ip = stringutils.Trim(ip)
+			pinger, err := ping.NewPinger(ip)
+			if err != nil {
+				panic(err)
+			}
 
-		pinger.Size = 548
-		pinger.SetPrivileged(true)
-		var s Statistics
-		pinger.Count, err = strconv.Atoi(nRequest)
-		if err != nil {
-			panic(err)
-		}
-		pinger.Interval = time.Duration(interval) * time.Millisecond
-		pinger.Timeout = ((time.Millisecond * time.Duration(pingLimit)) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
+			pinger.Size = 548
+			pinger.SetPrivileged(true)
+			var s Statistics
+			pinger.Count, err = strconv.Atoi(nRequest)
+			if err != nil {
+				panic(err)
+			}
+			pinger.Interval = time.Duration(interval) * time.Millisecond
+			pinger.Timeout = ((time.Millisecond * time.Duration(pingLimit)) * time.Duration(pinger.Count)) + (time.Duration(pinger.Count) * pinger.Interval)
 
-		if err = pinger.Run(); err != nil {
-			panic(err)
-		}
-		stats := pinger.Statistics()
+			if err = pinger.Run(); err != nil {
+				panic(err)
+			}
+			stats := pinger.Statistics()
 
-		s.Addr = stats.Addr
-		s.AvgRtt = float64(stats.AvgRtt / time.Millisecond)
-		s.MaxRtt = float64(stats.MaxRtt / time.Millisecond)
-		s.MinRtt = float64(stats.MinRtt / time.Millisecond)
-		s.PacketsRecv = stats.PacketsRecv
-		s.PacketLoss = stats.PacketLoss * float64(stats.PacketsSent) / 100.0
-		s.PacketsSent = stats.PacketsSent
-		s.PacketsRecvDuplicates = stats.PacketsRecvDuplicates
+			s.Addr = stats.Addr
+			s.AvgRtt = float64(stats.AvgRtt / time.Millisecond)
+			s.MaxRtt = float64(stats.MaxRtt / time.Millisecond)
+			s.MinRtt = float64(stats.MinRtt / time.Millisecond)
+			s.PacketsRecv = stats.PacketsRecv
+			s.PacketLoss = stats.PacketLoss * float64(stats.PacketsSent) / 100.0
+			s.PacketsSent = stats.PacketsSent
+			s.PacketsRecvDuplicates = stats.PacketsRecvDuplicates
 
-		results, err := db.Get_all(s.Addr)
-		if err != nil {
-			fmt.Print(err)
-			return
-		}
-		s.Location = results.Country_short + "-" + results.City
+			results, err := db.Get_all(s.Addr)
+			if err != nil {
+				fmt.Print(err)
+				return
+			}
+			s.Location = results.Country_short + "-" + results.City
+			res[i] = s
+			bar.Add(1)
+			wg.Done()
+			<-semaphore
+		}(i, ip)
+		time.Sleep(time.Duration(interval/N) * time.Millisecond)
+	}
+	wg.Wait()
+
+	for _, s := range res {
 		if s.PacketLoss > 0 {
 			packetLoss = append(packetLoss, s)
 		} else if s.MaxRtt > float64(pingLimit) {
@@ -312,7 +329,6 @@ func CheckLatency() {
 		} else {
 			goodServers = append(goodServers, s)
 		}
-		bar.Add(1)
 	}
 
 	packetLoss = UniqueStats(packetLoss)
@@ -350,9 +366,11 @@ func CheckLatency() {
 	sBad = append(sBad, []byte(helper.MarshalIndent(badServers))...)
 	sGood = append(sGood, []byte(helper.MarshalIndent(goodServers))...)
 
-	now := time.Now().Format("02-01-06_3:04:05")
+	now := time.Now().Format("02-01-06_3.04.05")
 	fname := path.Join("result", now)
-	fileutils.CreateDir(fname)
+	if err = fileutils.CreateDir(fname); err != nil {
+		log.Println(err)
+	}
 	if len(goodServers) > 0 {
 		ioutil.WriteFile(path.Join(fname, "good_servers.txt"), sGood, 0755)
 	}
